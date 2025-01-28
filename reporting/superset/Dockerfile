@@ -25,6 +25,7 @@ ENV GUNICORN_BIND=0.0.0.0:8088 \
     SUPERSET_HOME=/var/lib/superset \
     APP_DIR=${APP_DIR} \
     WORKER_CLASS=gevent
+
 ENV GUNICORN_CMD_ARGS="--workers ${GUNICORN_WORKERS} -k ${WORKER_CLASS} --timeout ${GUNICORN_TIMEOUT} --bind ${GUNICORN_BIND} --limit-request-line ${GUNICORN_LIMIT_REQUEST_LINE} --limit-request-field_size ${GUNICORN_LIMIT_REQUEST_FIELD_SIZE}"
 
 COPY requirements.txt requirements.txt
@@ -46,10 +47,11 @@ RUN useradd -U -m superset && \
         postgresql-client \
         libssl-dev \
         libffi-dev \
-        python-dev \
+        python3-dev \
         libsasl2-dev \
         libldap2-dev \
-        libecpg-dev && \
+        libjpeg-dev \
+        libpng-dev && \
     apt-get clean && \
     rm -r /var/lib/apt/lists/* && \
     pip install --upgrade setuptools "pip<24.1" && \
@@ -61,15 +63,18 @@ RUN useradd -U -m superset && \
         apache-superset[cors]==${SUPERSET_VERSION} \
         flask-mail==0.9.1 \
         flask-oauth==0.12 \
-        flask_oauthlib==0.9.5 && \
-    # MarkupSafe, fix missing 'soft_unicode' from 'markupsafe'
-    # fix cryptography, flask, werkzeug to last known working versions
+        flask_oauthlib==0.9.5 \
+        Flask-Migrate==3.1.0 \
+        alembic==1.8.1 \
+        redis==4.5.5 && \
+    # Fix missing MarkupSafe 'soft_unicode' and ensure Flask compatibility
     pip install -I --no-cache-dir \
         MarkupSafe==2.0.1 \
         cryptography==38.0.2 \
         flask==1.1.4 \
         werkzeug==1.0.1 \
-        psycopg2-binary==2.9.1
+        psycopg2-binary==2.9.1 \
+        pillow  # Ensure PIL/Pillow is installed for screenshots
 
 # Configure Filesystem
 RUN find ${APP_DIR} \! -type l -print0 | xargs -0 chown superset:superset
@@ -94,13 +99,10 @@ ENV PATH=$NVM_DIR/versions/node/$NODE_VERSION/bin:$PATH
 RUN node -v
 RUN npm -v
 
-# Copy OpenLMIS Customization
-COPY app-customizations/$SUPERSET_VERSION $APP_DIR
-
-# Installing dependecies via npm
+# Installing dependencies via npm
 RUN npm install -g po2json
 
-# Fetching dependecies and first build
+# Fetching dependencies and first build
 RUN wget -P /tmp https://github.com/apache/superset/archive/${SUPERSET_VERSION}.zip \
     && unzip /tmp/${SUPERSET_VERSION}.zip -d /tmp \
     && rsync -a \
@@ -110,9 +112,13 @@ RUN wget -P /tmp https://github.com/apache/superset/archive/${SUPERSET_VERSION}.
     && rm -r /tmp/${SUPERSET_VERSION}.zip
 
 USER superset:superset
-RUN cd $APP_DIR/superset-frontend && npm ci && npm run build && cp -r ../superset/static/assets ../static
+RUN cd $APP_DIR/superset-frontend && npm ci
 
 # Deploy application
 EXPOSE 8088
 HEALTHCHECK CMD ["curl", "-f", "http://localhost:8088/health"]
+
+# Use Redis for caching instead of the metadata database
+ENV CACHE_CONFIG='{"CACHE_TYPE": "RedisCache", "CACHE_REDIS_URL": "redis://redis:6379/0"}'
+
 CMD ["gunicorn", "superset:app"]
